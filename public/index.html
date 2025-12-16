@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BloomTPI - Power BI Layout Generator</title>
+
+<style>
+/* BASIC RESET */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+  padding: 20px;
+  color: #333;
+}
+
+.main-container { max-width: 1080px; margin: 0 auto; }
+
+.header { text-align: center; color: white; margin-bottom: 30px; }
+.header h1 { font-size: 2.5rem; margin-bottom: 10px; font-weight: 600; }
+.header p { font-size: 1.1rem; opacity: 0.9; }
+
+.card {
+  background: white; border-radius: 16px; padding: 30px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.2); margin-bottom: 20px;
+}
+
+.step-indicator { display: flex; justify-content: center; gap: 20px; margin-bottom: 30px; }
+.step { display: flex; align-items: center; gap: 10px; padding: 10px 20px;
+  border-radius: 25px; background: #f0f0f0; font-weight: 500; transition: all 0.3s ease; }
+.step.active { background: #667eea; color: white; }
+.step.completed { background: #48bb78; color: white; }
+
+.step-number { width: 28px; height: 28px; border-radius: 50%; background: white;
+  color: #667eea; display: flex; align-items: center; justify-content: center;
+  font-weight: bold; font-size: 14px; }
+
+.upload-section { text-align: center; padding: 40px 20px; }
+.upload-area {
+  border: 3px dashed #667eea; border-radius: 12px; padding: 50px 20px;
+  cursor: pointer; transition: all 0.3s ease; background: #f8f9ff;
+}
+.upload-area:hover { background: #eef1ff; border-color: #5568d3; }
+
+.upload-icon { font-size: 4rem; color: #667eea; margin-bottom: 15px; }
+input[type="file"] { display: none; }
+
+.btn {
+  padding: 12px 30px; border: none; border-radius: 8px; font-size: 1rem;
+  font-weight: 600; cursor: pointer; transition: all 0.3s ease;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.btn-primary { background: #667eea; color: white; }
+.btn-primary:hover { background: #5568d3; }
+
+.btn-secondary { background: #48bb78; color: white; }
+.btn-secondary:hover { background: #38a169; }
+
+.worksheet-item {
+  background: #f8f9ff; border-radius: 12px; padding: 20px; margin-bottom: 15px;
+  border: 2px solid transparent; cursor: pointer; transition: all 0.3s ease;
+}
+.worksheet-item:hover { border-color: #667eea; transform: translateX(5px); }
+.worksheet-item.selected {
+  background: #eef1ff; border-color: #667eea;
+  box-shadow: 0 4px 12px rgba(102,126,234,0.2);
+}
+
+.select-all-container {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 20px; padding: 15px 20px; background: #f8f9ff; border-radius: 8px;
+}
+
+.selected-count {
+  background: #667eea; color: white; padding: 5px 15px;
+  border-radius: 20px; font-size: 0.9rem; font-weight: 600;
+}
+
+.hidden { display: none; }
+.alert { padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; }
+.alert-success { background: #c6f6d5; color: #22543d; }
+.alert-info { background: #bee3f8; color: #2c5282; }
+
+/* SECTIONS TRANSITION */
+.section { transition: opacity 0.3s ease, transform 0.3s ease; }
+.section.hidden { display: none; opacity: 0; transform: translateY(20px); }
+.section.visible { display: block; opacity: 1; transform: translateY(0); }
+
+/* --- CLASSY ANIMATION: TABLEAU → POWER BI --- */
+.converter-overlay {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(0,0,0,0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s ease;
+}
+
+.converter-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.converter-box {
+  background: white;
+  padding: 45px 55px;
+  border-radius: 16px;
+  width: 430px;
+  text-align: center;
+  box-shadow: 0 12px 45px rgba(0,0,0,0.25);
+  animation: fadeInBox 0.8s ease forwards;
+}
+
+@keyframes fadeInBox {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.logo-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 25px;
+  margin-bottom: 25px;
+}
+
+/* LOGO STYLE */
+.logo {
+  width: 75px;
+  height: 75px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  opacity: 0;
+}
+
+
+/* Tableau → fade in and slide slightly */
+.tableau-logo {
+  background-image: url("https://upload.wikimedia.org/wikipedia/commons/4/4b/Tableau_Logo.png");
+  animation: tblFade 1.6s ease forwards;
+}
+
+@keyframes tblFade {
+  0% { opacity: 0; transform: translateX(-10px); }
+  100% { opacity: 1; transform: translateX(0px); }
+}
+
+/* Power BI → delayed fade-in */
+.powerbi-logo {
+  background-image: url("https://upload.wikimedia.org/wikipedia/commons/c/c9/Power_bi_logo_black.svg");
+  animation: pbiFade 1.6s ease forwards 1s;
+}
+
+@keyframes pbiFade {
+  0% { opacity: 0; transform: translateX(10px); }
+  100% { opacity: 1; transform: translateX(0px); }
+}
+
+/* Progress bar – controlled by JS */
+.progress-bar {
+  margin-top: 20px;
+  width: 100%;
+  height: 10px;
+  background: #e5e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.progress {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  border-radius: 8px;
+  transition: width 0.3s linear;
+}
+
+.padding-style { margin-bottom: 15px;}
+</style>
+</head>
+
+<body>
+
+<div class="main-container">
+  <div class="header">
+    <h1>BloomTPI</h1>
+    <p>Transform Tableau files into Power BI layouts!</p>
+  </div>
+
+  <div class="card">
+    <div class="step-indicator">
+      <div class="step active" id="step1"><div class="step-number">1</div><span>Upload</span></div>
+      <div class="step" id="step2"><div class="step-number">2</div><span>Select Worksheets</span></div>
+      <div class="step" id="step3"><div class="step-number">3</div><span>Conversion</span></div>
+    </div>
+
+    <!-- STEP 1 -->
+    <div id="uploadSection" class="section visible">
+      <div class="upload-section">
+        <div class="upload-area" id="uploadArea">
+          <div class="upload-icon padding-style">📊</div>
+          <h3 class="padding-style">Upload Tableau File</h3>
+          <p class="padding-style">Drag & drop your file here or click below</p>
+          <button class="btn btn-primary padding-style" id="chooseFileBtn">Choose File</button>
+          <div class="file-types">Supported formats: .twb, .twbx, .tds, .tdsx</div>
+          <div id="uploadFeedback"></div>
+        </div>
+        <input type="file" id="fileInput" accept=".twb,.twbx,.tds,.tdsx" />
+      </div>
+    </div>
+
+    <!-- STEP 2 -->
+    <div id="worksheetSection" class="section hidden">
+      <div class="alert alert-success">✓ File uploaded successfully! Select worksheets to continue.</div>
+
+      <div class="select-all-container">
+        <label><input type="checkbox" id="selectAllCheckbox" /> Select All Worksheets</label>
+        <div class="selected-count" id="selectedCount">0 selected</div>
+      </div>
+
+      <div id="worksheetList"></div>
+
+      <div class="action-buttons">
+        <button class="btn btn-secondary" id="continueConfig">Continue →</button>
+      </div>
+    </div>
+
+    <!-- STEP 3 -->
+    <div id="configSection" class="section hidden">
+      <div class="alert alert-info" id="configAlert">ℹ Configure chart types for selected worksheets.</div>
+
+      <h3 style="margin-bottom: 20px;">Selected Worksheets</h3>
+      <div id="selectedWorksheetsList"></div>
+
+      <div class="action-buttons">
+        <button class="btn btn-primary" id="backBtn">← Back</button>        
+        <button class="btn btn-secondary" id="generateBtn">Generate & Download</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ANIMATION OVERLAY -->
+<div id="converterOverlay" class="converter-overlay">
+  <div class="converter-box">
+    <h2>Converting Tableau → Power BI</h2>
+
+    <div class="logo-container">
+      <div class="logo tableau-logo"></div>
+      <div style="font-size: 2rem;">➡️</div>
+      <div class="logo powerbi-logo"></div>
+    </div>
+
+    <p style="font-weight: 600;">Generating your PBIT file...</p>
+
+    <div class="progress-bar">
+      <div class="progress"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ELEMENTS
+const fileInput = document.getElementById("fileInput");
+const chooseFileBtn = document.getElementById("chooseFileBtn");
+const uploadFeedback = document.getElementById("uploadFeedback");
+const worksheetList = document.getElementById("worksheetList");
+const selectedCountEl = document.getElementById("selectedCount");
+const selectAllCheckbox = document.getElementById("selectAllCheckbox");
+
+let worksheets = [], selected = [], uploadedFile = null;
+
+chooseFileBtn.onclick = () => fileInput.click();
+
+function showSection(step) {
+  ["uploadSection","worksheetSection","configSection"].forEach(id => {
+    document.getElementById(id).classList.add("hidden");
+    document.getElementById(id).classList.remove("visible");
+  });
+  document.getElementById(step).classList.remove("hidden");
+  document.getElementById(step).classList.add("visible");
+}
+
+// FILE UPLOAD
+fileInput.addEventListener("change", async e => {
+  uploadedFile = e.target.files[0];
+  if (!uploadedFile) return;
+
+  uploadFeedback.innerText = `Uploading ${uploadedFile.name}...`;
+
+  const formData = new FormData();
+  formData.append("twb", uploadedFile);
+
+  try {
+    const res = await fetch("/upload-twb", { method: "POST", body: formData });
+    const data = await res.json();
+
+    worksheets = data.worksheetNames.map(name => ({ name }));
+
+    document.getElementById("step1").classList.remove("active");
+    document.getElementById("step1").classList.add("completed");
+    document.getElementById("step2").classList.add("active");
+
+    showSection("worksheetSection");
+    renderWorksheets();
+  }
+  catch (err) {
+    uploadFeedback.innerText = "Error uploading file.";
+  }
+});
+
+function renderWorksheets() {
+  worksheetList.innerHTML = "";
+  worksheets.forEach((w, i) => {
+    const div = document.createElement("div");
+    div.className = "worksheet-item";
+    div.textContent = w.name;
+    div.onclick = () => toggle(i, div);
+    if (selected.includes(i)) div.classList.add("selected");
+    worksheetList.appendChild(div);
+  });
+  updateCount();
+}
+
+function toggle(i, div) {
+  if (selected.includes(i)) {
+    selected = selected.filter(x => x !== i);
+    div.classList.remove("selected");
+  } else {
+    selected.push(i);
+    div.classList.add("selected");
+  }
+  updateCount();
+}
+
+selectAllCheckbox.addEventListener("change", e => {
+  selected = e.target.checked ? worksheets.map((_, i) => i) : [];
+  renderWorksheets();
+});
+
+function updateCount() {
+  selectedCountEl.innerText = `${selected.length} selected`;
+  selectAllCheckbox.checked = selected.length === worksheets.length;
+}
+
+// CONTINUE BUTTON
+document.getElementById("continueConfig").onclick = async () => {
+  if (selected.length === 0) return alert("Select at least one worksheet.");
+
+  const selectedNames = selected.map(i => worksheets[i].name);
+
+  await fetch("/save-selected-worksheets", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      selectedWorksheets: selectedNames,
+      originalFileName: uploadedFile?.name || null
+    })
+  });
+
+  document.getElementById("step2").classList.remove("active");
+  document.getElementById("step2").classList.add("completed");
+  document.getElementById("step3").classList.add("active");
+
+  document.getElementById("configAlert").innerText = `You selected ${selected.length} worksheet(s).`;
+
+  showSection("configSection");
+  renderSelectedWorksheets();
+};
+
+// RENDER SELECTED
+function renderSelectedWorksheets() {
+  const list = document.getElementById("selectedWorksheetsList");
+  list.innerHTML = "";
+
+  const chartTitles = ["Column Chart","Line Chart","Pie Chart", "Combo Chart", "Area Chart"];
+
+  selected.forEach(i => {
+    const ws = worksheets[i];
+    const div = document.createElement("div");
+    div.className = "conversion-item";
+    div.style.background = "#f8f9ff";
+    div.style.border = "2px solid #e2e8f0";
+    div.style.borderRadius = "12px";
+    div.style.marginBottom = "15px";
+    div.style.padding = "20px";
+
+    div.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 20px;">
+        <b>${ws.name}</b>
+        <select class="chart-type-select" data-index="${i}" style="padding: 8px; border-radius: 8px; border: 2px solid #ddd;">
+          <option value="">Select Chart Title</option>
+          ${chartTitles.map(t => `<option value="${t.toLowerCase().replace(/ /g,'_')}">${t}</option>`).join("")}
+        </select>
+      </div>
+    `;
+    list.appendChild(div);
+  });
+}
+
+function getSelectedChartTypes() {
+  const selects = document.querySelectorAll(".chart-type-select");
+  const result = [];
+  selects.forEach(select => {
+    const index = select.dataset.index;
+    result.push({
+      worksheetIndex: index,
+      worksheetName: worksheets[index].name,
+      chartType: select.value
+    });
+  });
+  return result;
+}
+
+// GENERATE BUTTON WITH CLASSY ANIMATION
+document.getElementById("generateBtn").onclick = async () => {
+  const chartSelections = getSelectedChartTypes();
+
+  if (chartSelections.some(c => !c.chartType))
+    return alert("Select chart types for all worksheets.");
+
+  const overlay = document.getElementById("converterOverlay");
+  const progress = document.querySelector(".progress");
+  overlay.classList.add("active");
+
+  // Reset bar
+  progress.style.width = "0%";
+
+  // Smooth progress animation (3 seconds)
+  const loadingTime = 3000;
+  setTimeout(() => { progress.style.width = "100%"; }, 100);
+
+  try {
+    // Start backend request
+    const responsePromise = fetch("/save-chart-types", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chartSelections,
+        selectedWorksheets: selected.map(i => worksheets[i].name),
+        originalFileName: uploadedFile?.name || null
+      })
+    });
+
+    // Wait for both progress animation + backend
+    const [response] = await Promise.all([
+      responsePromise,
+      new Promise(resolve => setTimeout(resolve, loadingTime))
+    ]);
+
+    if (!response.ok) {
+      overlay.classList.remove("active");
+      return alert("Error generating PBIT.");
+    }
+
+    // Download
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+
+    a.href = url;
+    a.download = `${uploadedFile.name}.pbit`;
+    a.click();
+
+    window.URL.revokeObjectURL(url);
+
+    setTimeout(() => {
+      overlay.classList.remove("active");
+      alert("PBIT downloaded successfully!");
+    }, 500);
+
+  } catch (err) {
+    overlay.classList.remove("active");
+    alert("Error generating PBIT file.");
+  }
+};
+
+// BACK BUTTON
+document.getElementById("backBtn").onclick = () => {
+  document.getElementById("step3").classList.remove("active");
+  document.getElementById("step2").classList.add("active");
+  showSection("worksheetSection");
+};
+</script>
+
+</body>
+</html>
