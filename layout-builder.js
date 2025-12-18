@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { mainLayout } = require("./templates/main-layout");
 const { dynamicLayout } = require("./templates/visual-container-base");
-const { configTemplate, queryTemplate, dataTransformsTemplate } = require("./templates/dynamic");
+const { configTemplate, queryTemplate, dataTransformsTemplate, makeFilters } = require("./templates/dynamic");
 
 function makeDaxExpression(fieldInfo) {
   if (!fieldInfo) return "";
@@ -12,116 +12,93 @@ function makeDaxExpression(fieldInfo) {
 
 function buildLayoutBatch(layoutConfigs) {
   const outputPath = path.join(__dirname, "./Template/Report/Layout");
-
-  // Ensure folder exists
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-  // Load main layout template
   const mainLayoutObj = mainLayout();
 
-  // Dynamic counters
-let xCounter = 10;
-let yCounter = 0;
-let zCounter = 0;
+  layoutConfigs.forEach(input => {
 
-layoutConfigs.forEach((input, index) => {
-  console.log("Inputss", input)
-  // Assign & advance layout positions
-  const x = xCounter;
-  const y = yCounter;
-  const z = zCounter;
+    console.log("input", input)
+    const visualId = "visual_" + Date.now() + Math.floor(Math.random() * 1000);
 
-  xCounter += 270;         // move right
-  // yCounter += input.height + 20;   // uncomment if you want vertical stacking
-  zCounter += 1;
+    const x = input.x || 10;
+    const y = input.y || 0;
+    const z = input.z || 0;
 
-  // Extract raw values
-  // const dimensionField = input.dimension.field;
-  // const measureField = input.measure.field;
-  // const aggFunc = input.measure.aggFunc || "";
-  // const isHierarchy = input.isHierarchy;
-  // const hierarchyLevel = input.hierarchyLevel || "Year";
-  const dimensionField = input.dimension;
-  const measureField = input.measure;
-  const aggFunc = input.measure|| "";
-  const isHierarchy = Array.isArray(dimensionField?.field)
-    ? dimensionField.field[0]?.isHierarchy
-    : dimensionField?.field?.isHierarchy;
-  console.log("isHierarchyisHierarchy", isHierarchy)
-  
-  const hierarchyLevel = input.hierarchyLevel || "Year";
-  const visualId = "visual_" + Date.now() + Math.floor(Math.random() * 1000);
-  
-  const replacements = {
-    visualType: input.visualType,
-    table: input.table,
-    dimension: dimensionField,
-    measure: measureField,
-    //aggFuncMeasure: aggFunc,
-    x,
-    y,
-    z,
-    width: input.width,
-    height: input.height,
-    visualId,
-    isHierarchy,
-    hierarchyLevel
-  };
-console.log("replacementsreplacements", replacements)
-  // Generate config
-  const config = configTemplate(
-     replacements.visualId,
-      replacements.x,
-      replacements.y,
-      replacements.width,
-      replacements.height,
-      replacements.visualType,
-      replacements.table,
-      replacements.dimension,
-      //replacements.aggFuncMeasure, // SAME
-      replacements.measure,        // FIXED (stay here)
-      replacements.isHierarchy,
-      replacements.hierarchyLevel
+    // -------------------------
+    // Build dateColumnMap
+    // -------------------------
+    const dateColumnMap = {};
+    (input.chartFilter || []).forEach(f => {
+      if (f.localDateTableId && f.column) {
+        dateColumnMap[f.column] = f.localDateTableId;
+      }
+    });
+
+    // -------------------------
+    // Generate filters
+    // -------------------------
+    const visualFilters = makeFilters(
+      input.table,
+      input.chartFilter,
+      dateColumnMap
+    );
+
+    // Visual-level filters
+    const visualFilterArray = visualFilters.map(f => f.qProperty);
+    console.log("visualFilterArray", visualFilterArray)
+
+    // Query-level filters (same filters reused)
+    const queryFilters = visualFilters;
+    console.log("queryFilters", queryFilters)
+
+    // -------------------------
+    // Build visual container
+    // -------------------------
+    const finalContainer = dynamicLayout(
+      JSON.stringify(
+        configTemplate(
+          visualId,
+          x,
+          y,
+          input.width,
+          input.height,
+          input.visualType,
+          input.table,
+          input.dimension,
+          input.measure
+        ).qProperty
+      ),
+      JSON.stringify(
+        queryTemplate(
+          input.table,
+          input.dimension,
+          input.measure,
+          queryFilters // ✅ PASS FILTERS HERE
+        ).qProperty
+      ),
+      JSON.stringify(
+        dataTransformsTemplate(
+          input.table,
+          input.dimension,
+          input.measure
+        ).qProperty
+      ),
+      JSON.stringify(visualFilterArray)
+    );
+
+    mainLayoutObj.qProperty.sections[0].visualContainers.push(
+      finalContainer.qProperty
+    );
+  });
+
+  fs.writeFileSync(
+    outputPath,
+    Buffer.from(JSON.stringify(mainLayoutObj.qProperty, null, 2), "utf16le")
   );
-
-  console.log("configconfig", config)
-
-  // Generate query
-  const query = queryTemplate(
-    replacements.table,
-    replacements.dimension,
-    replacements.measure,
-    //replacements.aggFuncMeasure,
-    replacements.isHierarchy,
-    replacements.hierarchyLevel
-  );
-
-  // Generate dataTransforms
-  const dataTransforms = dataTransformsTemplate(
-    replacements.table,
-    replacements.dimension,
-    replacements.measure,
-    //replacements.aggFuncMeasure,
-    replacements.isHierarchy,
-    replacements.hierarchyLevel
-  );
-
-  // Apply container
-  const finalContainer = dynamicLayout(
-    JSON.stringify(config.qProperty),
-    JSON.stringify(query.qProperty),
-    JSON.stringify(dataTransforms.qProperty)
-  );
-
-  // Push visual container
-  mainLayoutObj.qProperty.sections[0].visualContainers.push(finalContainer.qProperty);
-});
-
-
-  const finalJson = JSON.stringify(mainLayoutObj.qProperty, null, 2);
-  fs.writeFileSync(outputPath, Buffer.from(finalJson, "utf16le"));
 
   console.log("✔ Layout generated successfully!");
 }
 
 module.exports = buildLayoutBatch;
+
