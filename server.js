@@ -21,7 +21,7 @@ if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
 
 // Multer for file upload
 const upload = multer({ storage: multer.memoryStorage() });
-let derivation, colDatatype, twbFileName, tableData, tableName, schema, schemaName, formattedColumns, dbName, server, dateColumns;
+let columns, columnInstances, derivation, colDatatype, twbFileName, tableData, tableName, schema, schemaName, formattedColumns, dbName, server, dateColumns;
 
 // ========================
 // GLOBAL VARIABLES
@@ -48,7 +48,7 @@ function parseFieldExpression(expr) {
   // ------------------------------------------
   const aggPattern = /^([A-Za-z0-9_]+)\s*\(\s*\[?([^\]\)]+)\]?\s*\)$/;
   const aggMatch = expr.match(aggPattern);
-  console.log("aggMatch", aggMatch)
+  //console.log("aggMatch", aggMatch)
 
   if (aggMatch) {
     return {
@@ -158,7 +158,7 @@ function MeasureDimension(columns, columnInstances) {
       ? instance.derivation.split("-")[0]
       : null;
 
-    console.log("Derivation:", derivation);
+    //console.log("Derivation:", derivation);
 
     const parsed = parseFieldExpression(colName);
 
@@ -177,56 +177,108 @@ function MeasureDimension(columns, columnInstances) {
   return { dimensions, measures };
 }
 
-function extractFilters(filters = []) {
+// ===============================
+// BUILD COLUMN INSTANCE LOOKUP
+// ===============================
+function buildColumnInstanceMap(columnInstances = []) {
+  const map = {};
+
+  columnInstances.forEach(ci => {
+    if (!ci?.$) return;
+
+    const rawColumn = ci.$.column || "";
+    const column = rawColumn.replace(/^\[(.*)\]$/, "$1");
+
+    const levelName = ci.$.name; // e.g. [yr:Order Date:ok]
+
+    const derivation =
+      ci.$.derivation && ci.$.derivation !== "None"
+        ? ci.$.derivation
+        : null;
+
+    map[levelName] = {
+      column,
+      derivation
+    };
+  });
+
+  return map;
+}
+
+// ===============================
+// MAIN FILTER EXTRACTOR
+// ===============================
+function extractFilters(filters = [], columnInstances = []) {
   const map = new Map();
+  const columnInstanceMap = buildColumnInstanceMap(columnInstances);
 
   filters.forEach(filter => {
     (filter.groupfilter || []).forEach(gf => {
 
-      // single member
-      if (gf.$?.function === 'member') {
-        addValue(map, gf.$.level, gf.$.member);
+      // SINGLE MEMBER
+      if (gf.$?.function === "member") {
+        processFilterNode(map, gf, columnInstanceMap);
       }
 
-      // union
-      if (gf.$?.function === 'union') {
+      // UNION
+      if (gf.$?.function === "union") {
         (gf.groupfilter || []).forEach(m =>
-          addValue(map, m.$?.level, m.$?.member)
+          processFilterNode(map, m, columnInstanceMap)
         );
       }
     });
   });
 
-  return [...map.entries()].map(([column, values]) => ({
-    column,
-    values: [...values]
+  return [...map.values()].map(f => ({
+    column: f.column,
+    ...(f.derivation && { derivation: f.derivation }),
+    values: [...f.values]
   }));
 }
 
+// ===============================
+// PROCESS ONE FILTER NODE
+// ===============================
+function processFilterNode(map, gf, columnInstanceMap) {
+  const level = gf.$?.level;
+  const member = gf.$?.member;
 
-function addValue(map, level, member) {
-  const column = extractColumnName(level);
+  if (!level || !member) return;
+
+  // Look up column + derivation
+  const instance = columnInstanceMap[level];
+
+  const column = instance?.column || extractColumnName(level);
+  const derivation = instance?.derivation || null;
+
   const value = cleanMemberValue(member);
 
-  if (!map.has(column)) {
-    map.set(column, new Set());
+  const key = `${column}|${derivation || ""}`;
+
+  if (!map.has(key)) {
+    map.set(key, {
+      column,
+      derivation,
+      values: new Set()
+    });
   }
-  map.get(column).add(value);
+
+  map.get(key).values.add(value);
 }
 
-function extractColumnName(level = '') {
-  const match = level.match(/\[none:(.*?):nk\]/);
+// ===============================
+// HELPERS
+// ===============================
+function extractColumnName(level = "") {
+  const match = level.match(/\[(?:\w+):(.*?):\w+\]/);
   return match ? match[1] : level;
 }
 
-function cleanMemberValue(member = '') {
+function cleanMemberValue(member = "") {
   return member
-    .replace(/&quot;/g, '')
-    .replace(/^"+|"+$/g, '');
-}
-
-
- 
+    .replace(/&quot;/g, "")
+    .replace(/^"+|"+$/g, "");
+} 
 
 function getColumnsFromWorksheet(datasourceArray, names) {
   if (!Array.isArray(datasourceArray) || !names) return [];
@@ -237,8 +289,8 @@ function getColumnsFromWorksheet(datasourceArray, names) {
     const table = worksheet.table?.[0] || {};
     const view = table.view?.[0] || {};
     const dsDeps = view["datasource-dependencies"]?.[0] || {};
-    const columns = dsDeps.column || [];
-    const columnInstances = dsDeps["column-instance"] || [];
+    columns = dsDeps.column || [];
+    columnInstances = dsDeps["column-instance"] || [];
     const consolidated = MeasureDimension(columns, columnInstances);
     //console.log("consolidated.dimensions", consolidated.dimensions)
     const worksheetFilters = view['filter'] || [];
@@ -249,7 +301,8 @@ function getColumnsFromWorksheet(datasourceArray, names) {
     name: worksheet.$.name,
     dimensions: consolidated.dimensions,
     measures: consolidated.measures,
-    filters: worksheetFilters   // ✅ worksheet-scoped filters
+    filters: worksheetFilters
+       // ✅ worksheet-scoped filters
   };
 
   });
@@ -327,99 +380,112 @@ app.post("/save-chart-types", async (req, res) => {
     if (!chartSelections || chartSelections.length === 0)
       return res.status(400).json({ error: "No chart selections provided." });
 
-    // 1️⃣ APPEND COLUMN FIRST
-    
-    // Pass tableName dynamically from uploaded datasource
-    const updatedTable = buildDataModel({
-      tableName,        // from uploaded TWB
+    // Build model and get dateTableMap
+    const { model: updatedModel, dateTableMap } = buildDataModel({
+      tableName,
       schema,
       schemaName,
       formattedColumns,
-      dbName, 
+      dbName,
       server,
       dateColumns,
       twbFileName
     });
-    const finalTable = updatedTable.qProperty
-    console.log("✅ Column appended successfully:", finalTable);
 
-    // 2️⃣ Generate layouts
+    const finalTable = updatedModel.qProperty;
+
+    // Get worksheet data
     const finalJson = {};
     chartSelections.forEach(item => { finalJson[item.worksheetName] = item.chartType; });
-
     const selectedWorksheetNames = Object.keys(finalJson);
     const worksheetData = getColumnsFromWorksheet(datasource, selectedWorksheetNames);
 
+    // Attach LocalDateTable ID for date columns
+    worksheetData.forEach(ws => {
+      ws.dimensions.forEach(dim => {
+        if (dateTableMap[dim.field]) {
+          dim.localDateTableId = dateTableMap[dim.field].localTableId;
+        }
+      });
+      ws.filters.forEach(f => {
+        const columnName = f?.$?.column || f?.column;
+        if (columnName && dateTableMap[columnName]) {
+          f.localDateTableId = dateTableMap[columnName].localTableId;
+        }
+      });
+    });
+
+    // Generate layout configs
     const layoutConfigs = (() => {
-  let xCounter = 10;     // x starts at 10
-  let zCounter = 0;      // z increments by 1
+      let xCounter = 10;
+      let zCounter = 0;
 
-  return worksheetData.map(ws => {
-    const selectedType = finalJson[ws.name];
-    const rawDimension = ws.dimensions;
-    //console.log("Rawwwwwww", rawDimension)
-    const rawMeasure = ws.measures;
+      return worksheetData.map(ws => {
+        const selectedType = finalJson[ws.name];
+        const rawDimension = ws.dimensions;
+        const rawMeasure = ws.measures;
 
-    const parsedDimension = parseDimension({
-      field: rawDimension?.field || rawDimension,
-      aggFunc: rawDimension?.aggFunc || null,
-      isHierarchy: rawDimension?.isHierarchy || false
-    });
+        const parsedDimension = parseDimension({
+          field: rawDimension?.field || rawDimension,
+          aggFunc: rawDimension?.aggFunc || null,
+          isHierarchy: rawDimension?.isHierarchy || false,
+          localDateTableId: rawDimension?.localDateTableId
+        });
 
-    const parsedMeasure = parseMeasure({
-      field: rawMeasure?.field || rawMeasure,
-      aggFunc: rawMeasure?.aggFunc || null
-    });
+        const parsedMeasure = parseMeasure({
+          field: rawMeasure?.field || rawMeasure,
+          aggFunc: rawMeasure?.aggFunc || null
+        });
 
-    const chartFilters = extractFilters(ws.filters);
-    console.log("filters", chartFilters)
+        const chartFilters = extractFilters(ws.filters, columnInstances);
+        chartFilters.forEach(f => {
+          if (f.column && dateTableMap[f.column]) {
+            f.localDateTableId = dateTableMap[f.column].localTableId;
+          }
+        });
 
-    // Store current X and Z before incrementing
-    const currentX = xCounter;
-    const currentZ = zCounter;
+        const currentX = xCounter;
+        const currentZ = zCounter;
 
-    // increment for next visual
-    xCounter += 270;  // horizontal spacing
-    zCounter += 1;
+        xCounter += 270;
+        zCounter += 1;
 
-    return {
-      visualType:
-        selectedType === "line_chart"
-          ? "lineChart"
-          : selectedType === "column_chart" || selectedType === "bar"
-          ? "columnChart"
-          : selectedType === "pie_chart"
-          ? "pieChart"
-          : selectedType === "area_chart"
-          ? "areaChart"
-          : selectedType === "combo_chart"
-          ? "lineStackedColumnComboChart"
-          : selectedType,
+        return {
+          visualType:
+            selectedType === "line_chart"
+              ? "lineChart"
+              : selectedType === "column_chart" || selectedType === "bar"
+              ? "columnChart"
+              : selectedType === "pie_chart"
+              ? "pieChart"
+              : selectedType === "area_chart"
+              ? "areaChart"
+              : selectedType === "combo_chart"
+              ? "lineStackedColumnComboChart"
+              : selectedType,
 
-      dimension: parsedDimension,
-      isHierarchy: parsedDimension.isHierarchy,
-      measure: parsedMeasure,
-      aggFuncMeasure: parsedMeasure.aggFunc || "",
-      table: tableName,
-      chartFilter: chartFilters,
+          dimension: parsedDimension,
+          isHierarchy: parsedDimension.isHierarchy,
+          measure: parsedMeasure,
+          aggFuncMeasure: parsedMeasure.aggFunc || "",
+          table: tableName,
+          chartFilter: chartFilters,
+          localDateTableId: parsedDimension.localDateTableId,
 
-      // dynamic layout
-      x: currentX,
-      y: 0,
-      z: currentZ,
+          x: currentX,
+          y: 0,
+          z: currentZ,
 
-      width: 270.4461942257218,
-      height: 268.76640419947506,
-      visualId: "visual_" + Date.now() + Math.floor(Math.random() * 1000),
-      hierarchyLevel:parsedDimension.aggFunc
-    };
-  });
-})();
-
+          width: 270.4461942257218,
+          height: 268.76640419947506,
+          visualId: "visual_" + Date.now() + Math.floor(Math.random() * 1000),
+          hierarchyLevel: parsedDimension.aggFunc
+        };
+      });
+    })();
 
     await buildLayoutBatch(layoutConfigs);
 
-    // 3️⃣ Create PBIT
     const pbitPath = await createPBIT(twbFileName);
 
     res.setHeader("Content-Disposition", "attachment; filename=Final.pbit");
@@ -431,8 +497,6 @@ app.post("/save-chart-types", async (req, res) => {
     res.status(500).send("Error generating PBIT file");
   }
 });
-
-
 // Start server
 app.listen(port, () => {
   console.log(`🚀 Server running at http://localhost:${port}`);

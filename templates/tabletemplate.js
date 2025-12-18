@@ -598,7 +598,7 @@ const variations = (relationshipId, localId )=>{
                 },
                 "isDefault": true
               }
-    }
+}
 
 module.exports = {
   tablecolumn,

@@ -3,116 +3,182 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-function applyTemplate(template, data) {
-  let output = template;
-  for (const key in data) {
-    const value = data[key];
-    output = output.replace(new RegExp(`{{?${key}}}?`, "g"), value);
-  }
-  return output;
-}
+// ==================================================
+// BUILD DATA MODEL
+// ==================================================
 
 function buildDataModel({ tableName, formattedColumns, dbName, server }) {
 
+  // -----------------------------------------------
+  // ID GENERATORS
+  // -----------------------------------------------
+
   function generateGuid() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
       const r = (Math.random() * 16) | 0;
-      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      const v = c === "x" ? r : (r & 0x3) | 0x8;
       return v.toString(16);
     });
   }
 
-  function generateLocalId() {
+  function generateLocalDateTableId() {
     return "LocalDateTable_" + crypto.randomUUID();
   }
 
+  // -----------------------------------------------
+  // DATA TYPE NORMALIZER
+  // -----------------------------------------------
+
   function normalizeDataType(type) {
     if (!type) return "string";
-    const t = type.toLowerCase();
-    if (t === "real") return "double";
-    if (t === "integer") return "int64";
-    if (t === "date") return "dateTime";
-    return type;
+
+    const dataType = type.toLowerCase();
+
+    switch (dataType) {
+      case "real":
+        return "double";
+      case "integer":
+        return "int64";
+      case "date":
+        return "dateTime";
+      default:
+        return type;
+    }
   }
 
-  // 1️⃣ Base model
+  // -----------------------------------------------
+  // BASE MODEL & TABLE
+  // -----------------------------------------------
+
   const model = tableTemplate(tableName, generateGuid);
   const table = model.qProperty.model.tables[0];
 
   const localDateTables = [];
   const relationships = [];
 
-  formattedColumns.forEach(col => {
-    if (!col) return;
+  // Map: date column → local table info
+  const dateTableMap = {};
 
-    const colName = col.columnName || col.name;
-    const rawType = col.dataType;
+  // -----------------------------------------------
+  // PROCESS COLUMNS
+  // -----------------------------------------------
+
+  formattedColumns.forEach(column => {
+    if (!column) return;
+
+    const columnName = column.columnName || column.name;
+    const rawType = column.dataType;
     const normalizedType = normalizeDataType(rawType);
-    const isDate = rawType === "date";
+    const isDateColumn = rawType === "date";
 
-    if (!isDate) {
-      const colObj = tablecolumn(
-        colName,
+    // -----------------------------
+    // NON-DATE COLUMN
+    // -----------------------------
+    if (!isDateColumn) {
+      const columnObject = tablecolumn(
+        columnName,
         normalizedType,
-        colName,
+        columnName,
         generateGuid(),
-        col.aggregation || "none"
+        column.aggregation || "none"
       );
-      table.columns.push(colObj.qProperty);
+
+      table.columns.push(columnObject.qProperty);
       return;
     }
 
-    const localId = generateLocalId();
+    // -----------------------------
+    // DATE COLUMN
+    // -----------------------------
+
+    const localTableId = generateLocalDateTableId();
     const relationshipId = generateGuid();
 
-    const localTableObj = localtable(localId, tableName, colName, generateGuid);
-    localDateTables.push(localTableObj.qProperty);
+    // Save mapping for later use (filters, visuals)
+    dateTableMap[columnName] = {
+      localTableId,
+      relationshipId
+    };
 
-    const relObj = relationship(localId, tableName, colName, relationshipId);
-    relationships.push(relObj.qProperty);
+    // Create local date table
+    const localDateTable = localtable(
+      localTableId,
+      tableName,
+      columnName,
+      generateGuid
+    );
+    localDateTables.push(localDateTable.qProperty);
 
-    const dateColObj = datecolumn(
-      colName,
+    // Create relationship
+    const relationshipObject = relationship(
+      localTableId,
+      tableName,
+      columnName,
+      relationshipId
+    );
+    relationships.push(relationshipObject.qProperty);
+
+    // Create date column in main table
+    const dateColumnObject = datecolumn(
+      columnName,
       "dateTime",
-      colName,
+      columnName,
       "Long Date",
       generateGuid(),
       "none",
       relationshipId,
-      localId
+      localTableId
     );
 
-    table.columns.push(dateColObj.qProperty);
+    table.columns.push(dateColumnObject.qProperty);
   });
 
-  const partitionObj = partitions(tableName, dbName, server);
-  table.partitions.push(partitionObj.qProperty);
+  // -----------------------------------------------
+  // PARTITION
+  // -----------------------------------------------
+
+  const partitionObject = partitions(tableName, dbName, server);
+  table.partitions.push(partitionObject.qProperty);
+
+  // -----------------------------------------------
+  // APPEND GENERATED OBJECTS
+  // -----------------------------------------------
+
   model.qProperty.model.tables.push(...localDateTables);
   model.qProperty.model.relationships = relationships;
 
-  // 🔹 Append to DataModelSchema using layout-style logic
-  const schemaTemplatePath = path.join(__dirname, "./templates/DataModelSchemaTemplate.txt"); // Your template file
-  const schemaOutputPath = path.join(__dirname, "./Template/DataModelSchema");
+  // -----------------------------------------------
+  // DEBUG: DATE COLUMN MAP
+  // -----------------------------------------------
 
-  let templateContent = "";
-  if (fs.existsSync(schemaTemplatePath)) {
-    templateContent = fs.readFileSync(schemaTemplatePath, "utf8");
-  } else {
-    // fallback if template not found
-    templateContent = "{{DataModelContent}}";
-  }
+  Object.entries(dateTableMap).forEach(([columnName, info]) => {
+    console.log(
+      `🗓️ Date Column: ${columnName} → LocalTable: ${info.localTableId}, Relationship: ${info.relationshipId}`
+    );
+  });
 
-  const replacements = {
-    DataModelContent: JSON.stringify(model.qProperty, null, 2)
+  // -----------------------------------------------
+  // WRITE DATA MODEL SCHEMA
+  // -----------------------------------------------
+
+  const outputPath = path.join(__dirname, "./Template/DataModelSchema");
+  const jsonContent = JSON.stringify(model.qProperty, null, 2);
+  const utf16Buffer = Buffer.from(jsonContent, "utf16le");
+
+  fs.writeFileSync(outputPath, utf16Buffer);
+
+  // -----------------------------------------------
+  // RETURN RESULT
+  // -----------------------------------------------
+
+  return {
+    model,
+    dateTableMap
   };
-
-  const finalContent = applyTemplate(templateContent, replacements);
-  const utf16 = Buffer.from(finalContent, "utf16le");
-  fs.writeFileSync(schemaOutputPath, utf16);
-
-  console.log(`✅ Data model appended to ${schemaOutputPath}`);
-
-  return model;
 }
+
+// ==================================================
+// EXPORT
+// ==================================================
 
 module.exports = { buildDataModel };
